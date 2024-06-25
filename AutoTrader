@@ -1,0 +1,308 @@
+#Thresholds for triggers
+#declare once_per_bar;
+input resetHighOnOpenValue = yes;
+input thresholdTypeValue = {default percent, points};
+input thresholdValue = 1;
+input trackStoplossValue = no;
+input stoplossThresholdValue = 2;
+input closeEveryDayValue = no;
+input closeEveryDayTimeValue = 1600;
+input triggerOffset = no;
+
+#Profit Calulator
+input orderSizeValue = 1000;
+
+# Market Hours
+input marketOpenValue = 0930;
+input marketCloseValue = 1600;
+input excludeFridayValue = no;
+
+# Definitions based on Input Type
+def threshold;
+def stoplossThreshold;
+
+def closeDay = if closeEveryDayValue and SecondsTillTime(closeEveryDayTimeValue) <= GetAggregationPeriod() / 1000 then yes else no;
+
+# Time and Price Definitions
+def isFourHoursOrGreaterChart = GetAggregationPeriod() >= AggregationPeriod.FOUR_HOURS;
+def isInMarketHours = if isFourHoursOrGreaterChart and !(excludeFridayValue and GetDayOfWeek(GetYYYYMMDD()) == 5) then yes
+                      else SecondsFromTime(marketOpenValue) >= 0 and SecondsTillTime(marketCloseValue) > 0 and !(excludeFridayValue and GetDayOfWeek(GetYYYYMMDD()) == 5);
+
+# Heikin Ashi Calculations
+def HA_Close = (open[1] + high[1] + low[1] + close[1]) / 4;
+def HA_Open = CompoundValue(1, (HA_Open[2] + HA_Close[2]) / 2, close);
+def HA_High = Max(Max(high, HA_Open), HA_Close);
+def HA_Low = Min(Min(low, HA_Open), HA_Close);
+def conditionForTopWickOnly = HA_Close >= HA_Open and HA_High > HA_Close and HA_Low == Min(HA_Open, HA_Close);
+
+AssignPriceColor(if isInMarketHours then 
+        Color.CURRENT 
+    else 
+        if HA_Close < HA_Open and ! closeDay then 
+            Color.PINK 
+        else if HA_Close > HA_Open and ! closeDay then 
+            Color.LIGHT_GREEN 
+        else 
+            Color.DARK_GRAY);
+
+
+def allConditionsMet;
+def highestPrice;
+def thresholdTypePoints;
+if IsNaN(highestPrice[1]) or allConditionsMet[1] or allConditionsMet[2] or (! isInMarketHours and resetHighOnOpenValue)
+then {
+    highestPrice = 0;
+} else if conditionForTopWickOnly[2] and conditionForTopWickOnly[1] and ! conditionForTopWickOnly { 
+    highestPrice = Max(high, highestPrice[1]);
+} else {
+    highestPrice = highestPrice[1];
+}
+
+switch (thresholdTypeValue) {
+case points:
+    thresholdTypePoints = yes;
+case percent:
+    thresholdTypePoints = no;
+}
+
+if thresholdTypePoints
+then {
+    threshold = thresholdValue;
+    stoplossThreshold = stoplossThresholdValue;
+} else {
+    threshold = highestPrice * thresholdValue / 100;
+    stoplossThreshold = highestPrice * stoplossThresholdValue / 100;
+} 
+
+# Conditions for Sell
+allConditionsMet = highestPrice - low > threshold and  conditionForTopWickOnly[1] and conditionForTopWickOnly and isInMarketHours;
+
+# Sell and Stop Loss Tracking
+def stopLossPriceTracker;
+def sellPriceTracker;
+def lastSellPrice;
+def lastBuyPrice;
+def lastStoplossPrice;
+def totalStartedBuys;
+def totalSellOrders;
+def totalStoplosses;
+def sellingHigh;
+def sellingLow;
+def shortfallFromSellPrice;
+def surplusAboveStopLoss;
+
+if allConditionsMet
+then {
+    lastSellPrice = close + threshold;
+    lastBuyPrice = close;
+    lastStoplossPrice = close - stoplossThreshold;
+} else {
+    lastSellPrice = Double.NaN;
+    lastBuyPrice = Double.NaN;
+    lastStoplossPrice = Double.NaN;
+}
+
+# Sell and Stoploss Price Tracking
+if closeDay and ! closeDay[1] and sellPriceTracker[1] and stopLossPriceTracker[1]
+then {
+    if close >= sellPriceTracker[1] - threshold
+    then {
+        sellingHigh = yes;
+        sellingLow = no;
+        if thresholdTypePoints
+        then {
+            shortfallFromSellPrice = shortfallFromSellPrice[1] + sellPriceTracker[1] - close;
+
+        }
+        else {
+            shortfallFromSellPrice = shortfallFromSellPrice[1] + ((sellPriceTracker[1] - close) / threshold * thresholdValue);
+        }
+        surplusAboveStopLoss = surplusAboveStopLoss[1];
+    } else {
+        surplusAboveStopLoss = surplusAboveStopLoss[1] + (close - sellPriceTracker[1] - threshold - stoplossThreshold);
+        shortfallFromSellPrice = shortfallFromSellPrice[1];
+        sellingHigh = no;
+        sellingLow = yes;
+    }
+} else {
+    shortfallFromSellPrice = shortfallFromSellPrice[1];
+    surplusAboveStopLoss = surplusAboveStopLoss[1];
+    if high > sellPriceTracker[1]
+    then {
+        sellingHigh = yes;
+    } else {
+        sellingHigh = no;
+    }
+#sellingHigh = if high > sellPriceTracker[1] then yes else no;
+    if low < stoplossPriceTracker[1] and trackStoplossValue
+    then {
+        sellingLow = yes;
+
+    } else {
+        sellingLow = no;
+    }
+
+#    sellingHigh = if high > sellPriceTracker[1]
+#    then yes else no;
+#    sellingLow = if low < stopLossPriceTracker[1] and trackStoplossValue
+#    then yes else no;
+}
+
+sellPriceTracker = if allConditionsMet and IsNaN(sellPriceTracker[1]) then lastSellPrice else if sellingHigh[1] or sellingLow[1] then Double.NaN else sellPriceTracker[1];
+
+stopLossPriceTracker = if allConditionsMet and IsNaN(sellPriceTracker[1]) then lastStoplossPrice else if (sellingHigh and !sellingHigh[1]) or (sellingLow and !sellingLow[1]) then Double.NaN else if !IsNaN(sellPriceTracker) then stopLossPriceTracker[1] else Double.NaN;
+
+totalStoplosses = if (sellingLow and !sellingLow[1]) then totalStoplosses[1] + 1 else totalStoplosses[1];
+
+totalSellOrders = if (sellingHigh and !sellingHigh[1]) then totalSellOrders[1] + 1 else totalSellOrders[1];
+
+totalStartedBuys = if allConditionsMet and IsNaN(sellPriceTracker[1]) then totalStartedBuys[1] + 1 else totalStartedBuys[1];
+
+AddChartBubble(!sellingHigh[1] and sellingHigh and totalSellOrders > 0, sellPriceTracker[1], (if closeDay then "*#" else "#") + totalSellOrders + ": " + Round(sellPriceTracker[1], 2), Color.LIGHT_GREEN, yes);
+AddChartBubble(!sellingLow[1] and sellingLow and totalStoplosses > 0, stopLossPriceTracker[1], (if closeDay then "*#" else "#") + totalStoplosses + ": " + Round(stopLossPriceTracker[1], 2), Color.LIGHT_RED, no);
+
+# Buy Orders and Averages
+def validBuy = if !IsNaN(lastBuyPrice) then 1 else 0;
+def lastBuyPriceAvgcount = CompoundValue(1, lastBuyPriceAvgcount[1] + validBuy, 0);
+def totalBuyPrice = CompoundValue(1, if validBuy then totalBuyPrice[1] + lastBuyPrice else totalBuyPrice[1], 0);
+def lastBuyPriceAvg = if lastBuyPriceAvgcount > 0 then totalBuyPrice / lastBuyPriceAvgcount else Double.NaN;
+
+# Sell Price Averages
+def sellPriceAvgcount = CompoundValue(1, sellPriceAvgcount[1] + 1, 0);
+def totalSellPrice = CompoundValue(1, if !IsNaN(lastBuyPriceAvg) and !IsNaN(sellPriceTracker) then totalSellPrice[1] + ((lastBuyPriceAvg + threshold + close + threshold) / 2 ) else totalSellPrice[1] + close + threshold, 0);
+def sellPriceAvg = if sellPriceAvgcount > 0 then totalSellPrice / sellPriceAvgcount else Double.NaN;
+
+# Plots
+plot sellPriceAvgLine = sellPriceAvg;
+sellPriceAvgLine.SetDefaultColor(Color.GREEN);
+sellPriceAvgLine.SetStyle(Curve.SHORT_DASH);
+sellPriceAvgLine.SetLineWeight(1);
+
+plot highestPriceLine = if highestPrice > 0 and highestPrice[1] == highestPrice then highestPrice else Double.NaN;
+highestPriceLine.SetDefaultColor(Color.YELLOW);
+highestPriceLine.SetStyle(Curve.SHORT_DASH);
+highestPriceLine.SetLineWeight(1);
+plot thresholdPriceLine = if !IsNaN(highestPriceLine) then highestPrice - threshold else Double.NaN;
+thresholdPriceLine.SetDefaultColor(Color.YELLOW);
+thresholdPriceLine.SetStyle(Curve.SHORT_DASH);
+thresholdPriceLine.SetLineWeight(1);
+
+plot sellArrowPlot = if IsNaN(highestPriceLine[1]) and !IsNaN(highestPriceLine) and HA_Close <= HA_Open and HA_Low < HA_Close and HA_High == Max(HA_Open, HA_Close) then highestPriceLine + threshold else Double.NaN;
+sellArrowPlot.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+sellArrowPlot.SetLineWeight(5);
+sellArrowPlot.SetDefaultColor(Color.RED);
+
+plot buyPriceAvgLine = if !IsNaN(lastBuyPriceAvg) and !IsNaN(sellPriceTracker) then lastBuyPriceAvg else Double.NaN;
+buyPriceAvgLine.SetDefaultColor(Color.CYAN);
+buyPriceAvgLine.SetStyle(Curve.SHORT_DASH);
+buyPriceAvgLine.SetLineWeight(1);
+
+def buySellTriggerStatus;
+if (! triggerOffset or (triggerOffset and !IsNaN(sellPriceTracker[1] and !IsNaN(sellPriceTracker)))) and allConditionsMet then {
+buySellTriggerStatus = close + threshold;
+} else { buySellTriggerStatus = 0; }
+plot buySellTrigger = buySellTriggerStatus;
+
+plot sellPriceLine = sellPriceTracker;
+sellPriceLine.SetDefaultColor(Color.GREEN);
+sellPriceLine.SetStyle(Curve.FIRM);
+sellPriceLine.SetLineWeight(1);
+
+
+plot stoplossPriceLine = if IsNaN(sellPriceLine[1]) then stopLossPriceTracker else stopLossPriceTracker[1];
+stoplossPriceLine.SetDefaultColor(Color.RED);
+stoplossPriceLine.SetStyle(Curve.FIRM);
+stoplossPriceLine.SetLineWeight(1);
+
+plot highPricePlot = if allConditionsMet then highestPrice else Double.NaN;
+highPricePlot.SetPaintingStrategy(PaintingStrategy.POINTS);
+highPricePlot.SetLineWeight(3);
+highPricePlot.SetDefaultColor(Color.YELLOW);
+
+plot sellPricePlot = lastSellPrice;
+sellPricePlot.SetPaintingStrategy(PaintingStrategy.POINTS);
+sellPricePlot.SetLineWeight(3);
+sellPricePlot.SetDefaultColor(Color.GREEN);
+
+plot buyPricePlot = lastBuyPrice;
+buyPricePlot.SetPaintingStrategy(PaintingStrategy.POINTS);
+buyPricePlot.SetLineWeight(3);
+buyPricePlot.SetDefaultColor(Color.CYAN);
+
+plot buyArrowPlot = if !IsNaN(lastBuyPrice) then lastBuyPrice - threshold - stoplossThreshold else Double.NaN;
+buyArrowPlot.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+buyArrowPlot.SetLineWeight(5);
+buyArrowPlot.SetDefaultColor(Color.GREEN);
+
+plot stoplossPlot = lastStoplossPrice;
+stoplossPlot.SetPaintingStrategy(PaintingStrategy.POINTS);
+stoplossPlot.SetLineWeight(3);
+stoplossPlot.SetDefaultColor(Color.RED);
+
+# Time Tracking and Metrics
+def isNewDay = SecondsFromTime(marketOpenValue) == 0 and SecondsTillTime(marketCloseValue) != 0;
+def totalDays = CompoundValue(1, totalDays[1] + isNewDay, 1);
+def avgBuyOrdersPerDay = totalStartedBuys / totalDays;
+def avgTriggersPerDay = lastBuyPriceAvgcount / totalDays;
+
+# Labels for Metrics
+def buyProfit = thresholdValue * totalSellOrders;
+def stoploss = stoplossThresholdValue * totalStoplosses;
+def triggerProfit = thresholdValue * lastBuyPriceAvgcount;
+
+AddLabel(yes, "Triggers: " + lastBuyPriceAvgcount + ", Est. Gains: " + triggerProfit + if lastBuyPriceAvgcount < 10 then "      "
+                                    else if lastBuyPriceAvgcount < 100 then "     "
+                                    else if lastBuyPriceAvgcount < 1000 then "    "
+                                    else if lastBuyPriceAvgcount < 10000 then "   "
+                                    else if lastBuyPriceAvgcount < 100000 then "  "
+                                    else " " , Color.CYAN);
+
+AddLabel(yes, "Avg Trigs/Day: " + Round(avgTriggersPerDay, 2) + 
+    if Round(avgTriggersPerDay, 2) < 10 then "      " 
+    else if Round(avgTriggersPerDay, 2) < 100 then "     " 
+    else if Round(avgTriggersPerDay, 2) < 1000 then "    " 
+    else if Round(avgTriggersPerDay, 2) < 10000 then "   "
+    else if Round(avgTriggersPerDay, 2) < 100000 then "  " 
+    else " ", Color.WHITE);
+
+AddLabel(yes, "Orders: " + totalStartedBuys + if totalStartedBuys < 10 then "      "
+                                  else if totalStartedBuys < 100 then "     "
+                                  else if totalStartedBuys < 1000 then "    "
+                                  else if totalStartedBuys < 10000 then "   "
+                                  else if totalStartedBuys < 100000 then "  "
+                                  else " ", Color.CYAN);
+
+AddLabel(yes, "Avg Buys/Day: " + Round(avgBuyOrdersPerDay, 2) + 
+    if Round(avgBuyOrdersPerDay, 2) < 10 then "      " 
+    else if Round(avgBuyOrdersPerDay, 2) < 100 then "     " 
+    else if Round(avgBuyOrdersPerDay, 2) < 1000 then "    " 
+    else if Round(avgBuyOrdersPerDay, 2) < 10000 then "   "
+    else if Round(avgBuyOrdersPerDay, 2) < 100000 then "  " 
+    else " ", Color.WHITE);
+
+AddLabel(yes, "Trades: " + totalSellOrders + ", Gained: " + buyProfit + " " + thresholdTypeValue + if totalSellOrders < 10 then "      "
+                                  else if totalSellOrders < 100 then "     "
+                                  else if totalSellOrders < 1000 then "    "
+                                  else if totalSellOrders < 10000 then "   "
+                                  else if totalSellOrders < 100000 then "  "
+                                  else " ", Color.LIGHT_GREEN);
+
+
+AddLabel(yes, "Trades: " + totalStoplosses + ", Lost: " + stoploss + " " + thresholdTypeValue + if totalStoplosses < 10 then "      "
+                                  else if totalStoplosses < 100 then "     "
+                                  else if totalStoplosses < 1000 then "    "
+                                  else if totalStoplosses < 10000 then "   "
+                                  else if totalStoplosses < 100000 then "  "
+                                  else " ", Color.LIGHT_RED);
+
+def profit = if thresholdTypePoints then orderSizeValue * (buyProfit - stoploss) else  orderSizeValue * (buyProfit - stoploss) / 100 ;
+
+AddLabel(yes, "Profit on " + shortfallFromSellPrice + " " + surplusAboveStopLoss + " : $" + profit + 
+    if profit < 10 then "      " 
+    else if profit < 100 then "     " 
+    else if profit < 1000 then "    " 
+    else if profit < 10000 then "   "
+    else if profit < 100000 then "  " 
+    else " ", Color.WHITE);
+
+AddLabel(!IsNaN(sellPriceTracker), "Orders Still Open    ", Color.YELLOW);
