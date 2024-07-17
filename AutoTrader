@@ -174,7 +174,7 @@ if lastBuyDay[1] != GetYYYYMMDD() and sellPriceTracker {
 
 # Labels for Metrics
 def buyProfit = ( thresholdValue + sellPriceOffsetValue ) * sellCount;
-def triggerProfit = thresholdValue * triggerCount;
+def triggerProfit = thresholdValue * (buyCount + Floor((triggerCount - buyCount) / 2));
 
 AddLabel(yes, "Triggers: " + triggerCount + ", Est. Gains: " + triggerProfit + if triggerCount < 10 then "      "
                                     else if triggerCount < 100 then "     "
