@@ -209,10 +209,13 @@ AddLabel(yes, "Avg Buys/Day: " + Round(avgBuyOrdersPerDay, 2) +
 def annualFactor = if totalDays > 252 then totalDays / 252 else 1;
 def profit252 = Round((252 / buyDaysCount) * buyProfit / annualFactor, 2);
 
-def productivityScore = round((
-    (buyCount / Round(triggerCount + 1 - buyCount) / 2) + 0.5, 0) * 
-    (buyProfit / 100) * 
-    (profit252 / 100)) * 100, 2);
+def productivityScore = Round(
+    (
+        (buyCount / Ceil((triggerCount + 1 - buyCount) / 2)) *
+        (buyProfit / 100) *
+        (profit252 / 100)
+    ) * 100, 2
+);
 
 AddLabel(yes, "Score: " + productivityScore + ", " +
     "Working Days: " + buyDaysCount + ", " + 
